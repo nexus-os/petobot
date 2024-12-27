@@ -50,8 +50,6 @@ impl Peto {
 }
 
 async fn update_vals(p: &Peto, peripheral: &impl Peripheral, characteristic_left: &Characteristic, characteristic_right: &Characteristic) -> Result<(), Box<dyn Error>> {
-
-    // Write to the characteristic.
     peripheral
         .write(
             &characteristic_left,
@@ -59,16 +57,16 @@ async fn update_vals(p: &Peto, peripheral: &impl Peripheral, characteristic_left
             WriteType::WithoutResponse,
         )
         .await?;
-    println!("Value written to characteristic_left: {}", p.left_power);
 
     peripheral
         .write(
             &characteristic_right,
-            &vec![p.left_power],
+            &vec![p.right_power],
             WriteType::WithoutResponse,
         )
         .await?;
-    println!("Value written to characteristic_right: {}", p.right_power);
+        
+    println!("Values written - Left: {}, Right: {}", p.left_power, p.right_power);
     Ok(())
 }
 
@@ -119,25 +117,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let central = adapters.first().expect("Not found first something");
 
     // Start scanning for devices.
+    println!("Starting BLE scan...");
     central.start_scan(ScanFilter::default()).await?;
-    time::sleep(time::Duration::from_secs(2)).await; // Wait a bit for devices to be discovered.
+    println!("Scanning for 5 seconds...");
+    time::sleep(time::Duration::from_secs(5)).await; // Increased scan time
 
     // Find the desired BLE device by name or address.
     let peripherals = central.peripherals().await?;
+    println!("\nFound {} devices:", peripherals.len());
+    
     let mut peripheral = None;
     for p in peripherals.iter() {
-        let props = p.properties().await?.expect("No props :(");
-        match props.local_name.as_deref() {
-            Some("Petobot™") => {
+        if let Ok(Some(props)) = p.properties().await {
+            let name = props.local_name.unwrap_or_else(|| "Unknown".to_string());
+            println!("Device: {}", name);
+            
+            if name == "Petobot™" {
                 peripheral = Some(p);
+                println!("Found Petobot!");
                 break;
-            }
-            x => {
-                println!("Hi {:?}", x);
             }
         }
     }
-    let peripheral = peripheral.expect("Couldn't find device");
+    let peripheral = peripheral.expect("Could not find Petobot™ - is it powered on and in range?");
 
     // Connect to the device.
     peripheral.connect().await?;

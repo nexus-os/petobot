@@ -13,6 +13,11 @@ int leftPin = 5;
 int rightPin = 3;
 int ledPin = 8;
 
+const int LEFT_SENSOR = A0;
+const int RIGHT_SENSOR = A1;
+
+const int TURN_DELAY_MS = 200;
+
 BLECharacteristic *leftCharacteristic;
 BLECharacteristic *rightCharacteristic;
 
@@ -39,17 +44,7 @@ class MyServerCallbacks: public BLEServerCallbacks, public BLECharacteristicCall
     }
 };
 
-bool ledOn;
 MyServerCallbacks cbs;
-
-void toggleLed() {
-  ledOn = !ledOn;
-  if (ledOn) {
-    digitalWrite(ledPin, LOW);
-  } else {
-    digitalWrite(ledPin, HIGH);
-  }
-}
 
 void setup() {
   Serial.begin(115200);
@@ -57,44 +52,65 @@ void setup() {
   pinMode(leftPin, OUTPUT);
   pinMode(rightPin, OUTPUT);
   pinMode(ledPin, OUTPUT);
+  pinMode(LEFT_SENSOR, INPUT_PULLUP);
+  pinMode(RIGHT_SENSOR, INPUT_PULLUP);
 
   analogWrite(leftPin, 0);
   analogWrite(rightPin, 0);
-  digitalWrite(ledPin, LOW);
-  ledOn = true;
-  for (int i = 0; i < 10; ++i) {
-    toggleLed();
-    delay(200);
-    log_e("BANANA");
-  }
-
+  analogWrite(ledPin, 0);
 
   BLEDevice::init("Petobot™");
-    BLEServer *pServer = BLEDevice::createServer();
+  BLEServer *pServer = BLEDevice::createServer();
 
-    pServer->setCallbacks(&cbs);
+  pServer->setCallbacks(&cbs);
 
-    BLEService *pService = pServer->createService(SERVICE_UUID);
-    leftCharacteristic = pService->createCharacteristic(
-                         CHARACTERISTIC_UUID_LEFT,
-                         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY
-                       );
-    leftCharacteristic->setCallbacks(&cbs);
-    rightCharacteristic = pService->createCharacteristic(
-                          CHARACTERISTIC_UUID_RIGHT,
-                          BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY
-                        );
-    rightCharacteristic->setCallbacks(&cbs);
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  leftCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID_LEFT,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY
+  );
+  leftCharacteristic->setCallbacks(&cbs);
+  rightCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID_RIGHT,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY
+  );
+  rightCharacteristic->setCallbacks(&cbs);
 
-    pService->start();
-    BLEAdvertising *pAdvertising = pServer->getAdvertising();
-    pAdvertising->addServiceUUID(SERVICE_UUID);
-    pAdvertising->start();
+  pService->start();
+  BLEAdvertising *pAdvertising = pServer->getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->start();
+}
+
+void setMotors(bool left, bool right) {
+  analogWrite(leftPin, left ? 255 : 0);
+  analogWrite(rightPin, right ? 255 : 0);
+  Serial.printf("Motors L:%d R:%d\n", left, right);
 }
 
 void loop() {
   Serial.println("Peto™");
+  int leftSensor = digitalRead(LEFT_SENSOR);
+  int rightSensor = digitalRead(RIGHT_SENSOR);
 
-  delay(1000);
-  toggleLed();
+  bool leftDetected = leftSensor == LOW;
+  bool rightDetected = rightSensor == LOW;
+
+  if (!leftDetected && !rightDetected) {
+    // No line detected - go forward
+    setMotors(true, true);
+  } else if (leftDetected && !rightDetected) {
+    // Line on left - turn right
+    setMotors(true, false);
+    delay(TURN_DELAY_MS);
+  } else if (!leftDetected && rightDetected) {
+    // Line on right - turn left
+    setMotors(false, true);
+    delay(TURN_DELAY_MS);
+  } else {
+    // Both sensors on line - stop
+    setMotors(false, false);
+  }
+
+  delay(50);  // debounce
 }
