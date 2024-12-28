@@ -3,7 +3,7 @@ use btleplug::platform::Manager;
 use crossterm::{
     event::{self, KeyCode, KeyEvent},
     execute,
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::error::Error;
 use std::io;
@@ -11,71 +11,55 @@ use tokio::time;
 use uuid::Uuid;
 
 struct Peto {
-    right_power: u8,
-    left_power: u8,
+    go: bool,
 }
 
 impl Peto {
     fn new() -> Self {
-        Self{
-            right_power : 0,
-            left_power : 0,
-        }
-    }
-    fn steer_left(&mut self) {
-        self.left_power = 0;
-    }
-
-    fn steer_down(&mut self) {
-        self.left_power = 255;
-    }
-    fn steer_up(&mut self) {
-        self.right_power =0;
-    }
-    fn steer_right(&mut self) {
-        self.right_power = 255;
+        Self { go: false }
     }
 
     fn steer_lots(&mut self) {
-        self.right_power = 255;
-        self.left_power = 255;
+        self.go = true;
     }
 
     fn steer_alot_less(&mut self) {
-        self.right_power = 0;
-        self.left_power = 0;
+        self.go = false;
     }
-
-
 }
 
-async fn update_vals(p: &Peto, peripheral: &impl Peripheral, characteristic_left: &Characteristic, characteristic_right: &Characteristic) -> Result<(), Box<dyn Error>> {
-    peripheral
-        .write(
-            &characteristic_left,
-            &vec![p.left_power],
-            WriteType::WithoutResponse,
-        )
-        .await?;
+async fn update_vals(
+    p: &Peto,
+    peripheral: &impl Peripheral,
+    characteristic_go: &Characteristic,
+    characteristic_stop: &Characteristic,
+) -> Result<(), Box<dyn Error>> {
+    if p.go {
+        peripheral
+            .write(&characteristic_go, &vec![255], WriteType::WithoutResponse)
+            .await?;
+    } else {
+        peripheral
+            .write(&characteristic_stop, &vec![0], WriteType::WithoutResponse)
+            .await?;
+    }
 
-    peripheral
-        .write(
-            &characteristic_right,
-            &vec![p.right_power],
-            WriteType::WithoutResponse,
-        )
-        .await?;
-        
-    println!("Values written - Left: {}, Right: {}", p.left_power, p.right_power);
+    println!("Values written - Go: {}", p.go);
     Ok(())
 }
 
-async fn spin(mut p: Peto, peripheral: &impl Peripheral, characteristic_left: &Characteristic, characteristic_right: &Characteristic) -> Result<(), Box<dyn Error>> {
+async fn spin(
+    mut p: Peto,
+    peripheral: &impl Peripheral,
+    characteristic_go: &Characteristic,
+    characteristic_stop: &Characteristic,
+) -> Result<(), Box<dyn Error>> {
     // Set up the terminal in raw mode to allow reading single keystrokes
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
 
-    println!("Press HJKLGS to control Petobot");
+    let message = "Press GS to control Petobot, Q to quit.";
+    println!("{}", message);
 
     loop {
         // Check if a key event is available
@@ -88,17 +72,17 @@ async fn spin(mut p: Peto, peripheral: &impl Peripheral, characteristic_left: &C
                 state: _,
             }) = event::read()?
             {
+                execute!(io::stdout(), Clear(ClearType::CurrentLine))?;
                 match code {
-                    KeyCode::Char('h') => p.steer_left(),
-                    KeyCode::Char('j') => p.steer_down(),
-                    KeyCode::Char('k') => p.steer_up(),
-                    KeyCode::Char('l') => p.steer_right(),
                     KeyCode::Char('g') => p.steer_lots(),
                     KeyCode::Char('s') => p.steer_alot_less(),
                     KeyCode::Char('q') => break,
-                    _ => (),
+                    _ => {
+                        println!("{}", message);
+                        continue;
+                    }
                 }
-                update_vals(&p, peripheral, characteristic_left, characteristic_right).await?;
+                update_vals(&p, peripheral, characteristic_go, characteristic_stop).await?;
             }
         }
     }
@@ -119,19 +103,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Start scanning for devices.
     println!("Starting BLE scan...");
     central.start_scan(ScanFilter::default()).await?;
-    println!("Scanning for 5 seconds...");
-    time::sleep(time::Duration::from_secs(5)).await; // Increased scan time
+    let sleep_duration = time::Duration::from_secs(1);
+    println!("Scanning for {:?}...", sleep_duration);
+    time::sleep(sleep_duration).await; // Increased scan time
 
     // Find the desired BLE device by name or address.
     let peripherals = central.peripherals().await?;
     println!("\nFound {} devices:", peripherals.len());
-    
+
     let mut peripheral = None;
-    for p in peripherals.iter() {
+    for p in peripherals.into_iter() {
         if let Ok(Some(props)) = p.properties().await {
             let name = props.local_name.unwrap_or_else(|| "Unknown".to_string());
             println!("Device: {}", name);
-            
+
             if name == "Petobot™" {
                 peripheral = Some(p);
                 println!("Found Petobot!");
@@ -151,27 +136,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Here you would find the UUID for the service and characteristic you're interested in.
     let desired_service_uuid = Uuid::parse_str("08daa714-ccf1-42a8-8a88-535652d04bac").unwrap();
-    let desired_char_uuid_left = Uuid::parse_str("1EF71EF7-1EF7-1EF7-1EF7-1EF71EF71EF7").unwrap();
-    let desired_char_uuid_right = Uuid::parse_str("1E551EF7-1E55-1E55-1E55-1E551E551EF7").unwrap();
+    let desired_char_uuid_go = Uuid::parse_str("FA57FA57-FA57-FA57-FA57-FA57FA57FA57").unwrap();
+    let desired_char_uuid_stop = Uuid::parse_str("1E55FA57-1E55-FA57-1E55-FA571E55FA57").unwrap();
 
     // Find the characteristic you want to write to.
     let service = services
         .iter()
         .find(|service| service.uuid == desired_service_uuid)
         .expect("No service found");
-    let characteristic_left = service
+    let characteristic_go = service
         .characteristics
         .iter()
-        .find(|c| c.uuid == desired_char_uuid_left)
-        .expect("No left found");
+        .find(|c| c.uuid == desired_char_uuid_go)
+        .expect("No go found");
 
-    let characteristic_right = service
+    let characteristic_stop = service
         .characteristics
         .iter()
-        .find(|c| c.uuid == desired_char_uuid_right)
-        .expect("No right found");
+        .find(|c| c.uuid == desired_char_uuid_stop)
+        .expect("No stop found");
 
-    spin(Peto::new(), peripheral, characteristic_left, characteristic_right).await?;
+    spin(
+        Peto::new(),
+        &peripheral,
+        characteristic_go,
+        characteristic_stop,
+    )
+    .await?;
 
     // Disconnect (optional, depending on your use case).
     peripheral.disconnect().await.unwrap();
