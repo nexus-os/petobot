@@ -14,11 +14,30 @@ use uuid::Uuid;
 #[derive(Debug)]
 struct Peto {
     go: bool,
+    right_power: u8,
+    left_power: u8,
 }
 
 impl Peto {
     fn new() -> Self {
-        Self { go: false }
+        Self {
+            go: false,
+            right_power: 0,
+            left_power: 0,
+        }
+    }
+
+    fn steer_left(&mut self) {
+        self.left_power = 0;
+    }
+    fn steer_down(&mut self) {
+        self.left_power = 255;
+    }
+    fn steer_up(&mut self) {
+        self.right_power = 0;
+    }
+    fn steer_right(&mut self) {
+        self.right_power = 255;
     }
 
     fn steer_lots(&mut self) {
@@ -32,6 +51,8 @@ impl Peto {
 
 struct Characterizer<'a, P> {
     peripheral: &'a P,
+    left: &'a Characteristic,
+    right: &'a Characteristic,
     go: &'a Characteristic,
     stop: &'a Characteristic,
 }
@@ -41,6 +62,16 @@ where
     P: Peripheral,
 {
     async fn update_vals(&self, p: &Peto) -> Result<(), Box<dyn Error>> {
+        self.peripheral
+            .write(&self.left, &vec![p.left_power], WriteType::WithoutResponse)
+            .await?;
+        self.peripheral
+            .write(
+                &self.right,
+                &vec![p.right_power],
+                WriteType::WithoutResponse,
+            )
+            .await?;
         if p.go {
             self.peripheral
                 .write(&self.go, &vec![255], WriteType::WithoutResponse)
@@ -71,7 +102,7 @@ async fn spin<'a>(
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, SavePosition)?;
 
-    let instructions = "Press GS to control Petobot, Q to quit.";
+    let instructions = "Press HJKLGS to control Petobot, Q to quit.";
     disp!(stdout, "{}", instructions);
 
     loop {
@@ -86,6 +117,10 @@ async fn spin<'a>(
             }) = event::read()?
             {
                 match code {
+                    KeyCode::Char('h') => p.steer_left(),
+                    KeyCode::Char('j') => p.steer_down(),
+                    KeyCode::Char('k') => p.steer_up(),
+                    KeyCode::Char('l') => p.steer_right(),
                     KeyCode::Char('g') => p.steer_lots(),
                     KeyCode::Char('s') => p.steer_alot_less(),
                     KeyCode::Char('q') => break,
@@ -152,29 +187,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
     peripheral.discover_services().await?;
     let services = peripheral.services();
 
-    let desired_char_uuid_go = Uuid::parse_str("FA57FA57-FA57-FA57-FA57-FA57FA57FA57").unwrap();
-    let desired_char_uuid_stop = Uuid::parse_str("1E55FA57-1E55-FA57-1E55-FA571E55FA57").unwrap();
+    let left = Uuid::parse_str("1EF71EF7-1EF7-1EF7-1EF7-1EF71EF71EF7").unwrap();
+    let right = Uuid::parse_str("1E551EF7-1E55-1E55-1E55-1E551E551EF7").unwrap();
+    let go = Uuid::parse_str("FA57FA57-FA57-FA57-FA57-FA57FA57FA57").unwrap();
+    let stop = Uuid::parse_str("1E55FA57-1E55-FA57-1E55-FA571E55FA57").unwrap();
 
     // Find the characteristic you want to write to.
     let service = services
         .iter()
         .find(|service| service.uuid == service_uuid)
         .unwrap();
+    let left = service
+        .characteristics
+        .iter()
+        .find(|c| c.uuid == left)
+        .ok_or("No left found")?;
+    let right = service
+        .characteristics
+        .iter()
+        .find(|c| c.uuid == right)
+        .ok_or("No right found")?;
     let go = service
         .characteristics
         .iter()
-        .find(|c| c.uuid == desired_char_uuid_go)
+        .find(|c| c.uuid == go)
         .ok_or("No go found")?;
     let stop = service
         .characteristics
         .iter()
-        .find(|c| c.uuid == desired_char_uuid_stop)
+        .find(|c| c.uuid == stop)
         .ok_or("No stop found")?;
 
     spin(
         Peto::new(),
         &Characterizer {
             peripheral,
+            left,
+            right,
             go,
             stop,
         },
