@@ -1,15 +1,17 @@
 use btleplug::api::{Central, Characteristic, Manager as _, Peripheral, ScanFilter, WriteType};
 use btleplug::platform::Manager;
+use crossterm::cursor::{RestorePosition, SavePosition};
 use crossterm::{
     event::{self, KeyCode, KeyEvent},
     execute,
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::error::Error;
-use std::io;
+use std::io::{self, Write};
 use tokio::time;
 use uuid::Uuid;
 
+#[derive(Debug)]
 struct Peto {
     go: bool,
 }
@@ -28,38 +30,49 @@ impl Peto {
     }
 }
 
-async fn update_vals(
-    p: &Peto,
-    peripheral: &impl Peripheral,
-    characteristic_go: &Characteristic,
-    characteristic_stop: &Characteristic,
-) -> Result<(), Box<dyn Error>> {
-    if p.go {
-        peripheral
-            .write(&characteristic_go, &vec![255], WriteType::WithoutResponse)
-            .await?;
-    } else {
-        peripheral
-            .write(&characteristic_stop, &vec![0], WriteType::WithoutResponse)
-            .await?;
-    }
-
-    println!("Values written - Go: {}", p.go);
-    Ok(())
+struct Characterizer<'a, P> {
+    peripheral: &'a P,
+    go: &'a Characteristic,
+    stop: &'a Characteristic,
 }
 
-async fn spin(
+impl<'a, P> Characterizer<'a, P>
+where
+    P: Peripheral,
+{
+    async fn update_vals(&self, p: &Peto) -> Result<(), Box<dyn Error>> {
+        if p.go {
+            self.peripheral
+                .write(&self.go, &vec![255], WriteType::WithoutResponse)
+                .await?;
+        } else {
+            self.peripheral
+                .write(&self.stop, &vec![0], WriteType::WithoutResponse)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+macro_rules! disp {
+    ($dst:expr, $($arg:tt)*) => {{
+        execute!($dst, Clear(ClearType::CurrentLine), RestorePosition)?;
+        write!($dst, $($arg)*)?;
+        $dst.flush()?;
+    }};
+}
+
+async fn spin<'a>(
     mut p: Peto,
-    peripheral: &impl Peripheral,
-    characteristic_go: &Characteristic,
-    characteristic_stop: &Characteristic,
+    characterizer: &'a Characterizer<'a, impl Peripheral>,
 ) -> Result<(), Box<dyn Error>> {
     // Set up the terminal in raw mode to allow reading single keystrokes
     terminal::enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, SavePosition)?;
 
-    let message = "Press GS to control Petobot, Q to quit.";
-    println!("{}", message);
+    let instructions = "Press GS to control Petobot, Q to quit.";
+    disp!(stdout, "{}", instructions);
 
     loop {
         // Check if a key event is available
@@ -72,17 +85,17 @@ async fn spin(
                 state: _,
             }) = event::read()?
             {
-                execute!(io::stdout(), Clear(ClearType::CurrentLine))?;
                 match code {
                     KeyCode::Char('g') => p.steer_lots(),
                     KeyCode::Char('s') => p.steer_alot_less(),
                     KeyCode::Char('q') => break,
                     _ => {
-                        println!("{}", message);
+                        disp!(stdout, "{}", instructions);
                         continue;
                     }
                 }
-                update_vals(&p, peripheral, characteristic_go, characteristic_stop).await?;
+                characterizer.update_vals(&p).await?;
+                disp!(stdout, "Values written - {:?}", p);
             }
         }
     }
@@ -112,7 +125,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("\nFound {} devices:", peripherals.len());
 
     let mut peripheral = None;
-    for p in peripherals.into_iter() {
+    for p in peripherals.iter() {
         if let Ok(Some(props)) = p.properties().await {
             let name = props.local_name.unwrap_or_else(|| "Unknown".to_string());
             println!("Device: {}", name);
@@ -144,13 +157,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .iter()
         .find(|service| service.uuid == desired_service_uuid)
         .expect("No service found");
-    let characteristic_go = service
+    let go = service
         .characteristics
         .iter()
         .find(|c| c.uuid == desired_char_uuid_go)
         .expect("No go found");
 
-    let characteristic_stop = service
+    let stop = service
         .characteristics
         .iter()
         .find(|c| c.uuid == desired_char_uuid_stop)
@@ -158,9 +171,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     spin(
         Peto::new(),
-        &peripheral,
-        characteristic_go,
-        characteristic_stop,
+        &Characterizer {
+            peripheral,
+            go,
+            stop,
+        },
     )
     .await?;
 
