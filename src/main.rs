@@ -115,7 +115,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start scanning for devices.
     println!("Starting BLE scan...");
-    central.start_scan(ScanFilter::default()).await?;
+    let service_uuid = Uuid::parse_str("08daa714-ccf1-42a8-8a88-535652d04bac").unwrap();
+    central
+        .start_scan(ScanFilter {
+            services: vec![service_uuid],
+        })
+        .await?;
     let sleep_duration = time::Duration::from_secs(1);
     println!("Scanning for {:?}...", sleep_duration);
     time::sleep(sleep_duration).await; // Increased scan time
@@ -147,27 +152,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     peripheral.discover_services().await?;
     let services = peripheral.services();
 
-    // Here you would find the UUID for the service and characteristic you're interested in.
-    let desired_service_uuid = Uuid::parse_str("08daa714-ccf1-42a8-8a88-535652d04bac").unwrap();
     let desired_char_uuid_go = Uuid::parse_str("FA57FA57-FA57-FA57-FA57-FA57FA57FA57").unwrap();
     let desired_char_uuid_stop = Uuid::parse_str("1E55FA57-1E55-FA57-1E55-FA571E55FA57").unwrap();
 
     // Find the characteristic you want to write to.
     let service = services
         .iter()
-        .find(|service| service.uuid == desired_service_uuid)
-        .expect("No service found");
+        .find(|service| service.uuid == service_uuid)
+        .unwrap();
     let go = service
         .characteristics
         .iter()
         .find(|c| c.uuid == desired_char_uuid_go)
-        .expect("No go found");
-
+        .ok_or("No go found")?;
     let stop = service
         .characteristics
         .iter()
         .find(|c| c.uuid == desired_char_uuid_stop)
-        .expect("No stop found");
+        .ok_or("No stop found")?;
 
     spin(
         Peto::new(),
@@ -180,7 +182,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
 
     // Disconnect (optional, depending on your use case).
-    peripheral.disconnect().await.unwrap();
+    peripheral.disconnect().await?;
     println!("Disconnected");
     Ok(())
 }
